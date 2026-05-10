@@ -20,32 +20,45 @@ Open a chat with [@BotFather](https://t.me/BotFather) on Telegram and send `/new
 
 BotFather replies with a token that looks like `123456789:AAHfiqksKZ8...` — that's the whole token, copy it including the leading number and colon.
 
-**2. Install the plugin.**
+**2. Add the marketplace and install the plugin.**
 
-These are Claude Code commands — run `claude` to start a session first.
-
-Install the plugin:
-```
-/plugin install telegram@claude-plugins-official
-/reload-plugins
-```
-
-**3. Give the server the token.**
+In a Claude Code session:
 
 ```
-/telegram:configure 123456789:AAHfiqksKZ8...
+/plugin marketplace add anatol-zeon/fct-claude-plugins
+/plugin install telegram@fct-claude-plugins
 ```
 
-Writes `TELEGRAM_BOT_TOKEN=...` to `~/.claude/channels/telegram/.env`. You can also write that file by hand, or set the variable in your shell environment — shell takes precedence.
+When the plugin is enabled, Claude Code prompts for **Bot token** — paste the BotFather token. It's stored in your system keychain. You can leave the prompt blank now and set it later with `/telegram:configure <token>`.
 
-> To run multiple bots on one machine (different tokens, separate allowlists), point `TELEGRAM_STATE_DIR` at a different directory per instance.
+> Multiple bots on one machine: point `TELEGRAM_STATE_DIR` at a different directory per instance.
 
-**4. Relaunch with the channel flag.**
+**3. Whitelist the channel (one-time settings edit).**
 
-The server won't connect without this — exit your session and start a new one:
+Channels from non-official marketplaces require explicit allow. Add this to `~/.claude/settings.json` once:
+
+```json
+{
+  "allowedChannelPlugins": [
+    { "marketplace": "fct-claude-plugins", "plugin": "telegram" }
+  ]
+}
+```
+
+Without it you'd have to pass `--dangerously-load-development-channels` on every launch.
+
+**4. Restart with the channel flag.**
+
+Channels are opt-in per session. Exit your current session and start a new one with:
 
 ```sh
-claude --channels plugin:telegram@claude-plugins-official
+claude --channels plugin:telegram@fct-claude-plugins
+```
+
+For VS Code users: this flag must be on the command Claude Code is launched with. The easiest path is to alias it in your shell so the VS Code terminal picks it up:
+
+```sh
+alias claude-tg='claude --channels plugin:telegram@fct-claude-plugins'
 ```
 
 **5. Pair.**

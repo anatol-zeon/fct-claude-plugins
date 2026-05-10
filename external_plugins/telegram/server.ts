@@ -28,14 +28,16 @@ const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const APPROVED_DIR = join(STATE_DIR, 'approved')
 const ENV_FILE = join(STATE_DIR, '.env')
 
-// Load ~/.claude/channels/telegram/.env into process.env. Real env wins.
-// Plugin-spawned servers don't get an env block — this is where the token lives.
+// Load ~/.claude/channels/telegram/.env into process.env. Real env wins, but
+// an empty-string value (e.g. from a skipped plugin userConfig prompt
+// substituting `${user_config.bot_token:-}`) counts as missing — otherwise
+// the .env fallback would be blocked when the prompt was left blank.
 try {
   // Token is a credential — lock to owner. No-op on Windows (would need ACLs).
   chmodSync(ENV_FILE, 0o600)
   for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
     const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2]
   }
 } catch {}
 
@@ -45,8 +47,9 @@ const STATIC = process.env.TELEGRAM_ACCESS_MODE === 'static'
 if (!TOKEN) {
   process.stderr.write(
     `telegram channel: TELEGRAM_BOT_TOKEN required\n` +
-    `  set in ${ENV_FILE}\n` +
-    `  format: TELEGRAM_BOT_TOKEN=123456789:AAH...\n`,
+    `  fill the plugin's "Bot token" prompt in /plugins,\n` +
+    `  or set it in ${ENV_FILE}\n` +
+    `  (format: TELEGRAM_BOT_TOKEN=123456789:AAH...).\n`,
   )
   process.exit(1)
 }
