@@ -102,6 +102,10 @@ loginctl enable-linger "$USER"     # survive ssh logout
 
 Logs: `journalctl --user -u claude-tg-bridge -f`. Stop: `systemctl --user stop claude-tg-bridge`. Status: `systemctl --user status claude-tg-bridge`.
 
+### Check fill: `/context`
+
+DM the bot `/context` to get the current Claude session's token usage — total context tokens, model, last-turn breakdown, and `~%` against both the 200k and 1M context windows (the variant in use isn't recoverable from the model string alone, so we show both). The MCP server reads the session's transcript jsonl directly under `~/.claude/projects/`, so this works without any Claude-side cooperation.
+
 ### Reset context: `/newsession`
 
 DM the bot `/newsession`. The bridge exits its current Claude session; the wrapper-loop restarts a fresh one with empty context. Useful when context fills up or you want to switch tasks without sshing back.

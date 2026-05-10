@@ -19,7 +19,7 @@ import { z } from 'zod'
 import { Bot, GrammyError, InputFile, type Context } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync, openSync, closeSync, readSync } from 'fs'
 import { homedir } from 'os'
 import { join, extname, sep } from 'path'
 
@@ -721,6 +721,92 @@ setInterval(() => {
   if (orphaned) shutdown()
 }, 5000).unref()
 
+// ─── /context — session token usage ─────────────────────────────────────────
+//
+// Claude Code logs each session to ~/.claude/projects/<cwd-encoded>/<session-id>.jsonl,
+// appending one JSON line per turn. The `assistant`-type entries carry
+// `message.usage` with cache_read + cache_creation + input_tokens — the prompt
+// size the model saw on that turn, which is effectively the current context
+// usage. We tail the file, find the most recent such entry, and report it.
+//
+// We don't get a session_id env var, but the bridge is the only active session
+// here (others are gated to idle), so "freshest jsonl under our cwd" reliably
+// resolves to this session.
+
+function projectDirHash(cwd: string): string {
+  // CC encodes the abs path by replacing `/` and `.` with `-`. The leading
+  // slash becomes a leading dash. Matches the directory names actually
+  // present under ~/.claude/projects/.
+  return cwd.replace(/[/.]/g, '-')
+}
+
+function findSessionJsonl(): string | null {
+  const dir = join(homedir(), '.claude', 'projects', projectDirHash(process.cwd()))
+  let entries: string[]
+  try { entries = readdirSync(dir) } catch { return null }
+  const candidates = entries
+    .filter(n => n.endsWith('.jsonl'))
+    .map(n => {
+      const p = join(dir, n)
+      try { return { path: p, mtime: statSync(p).mtimeMs } } catch { return null }
+    })
+    .filter((x): x is { path: string; mtime: number } => x != null)
+    .sort((a, b) => b.mtime - a.mtime)
+  return candidates[0]?.path ?? null
+}
+
+// Read at most maxBytes from the end of the file so a long-lived session's
+// multi-MB jsonl doesn't make /context slow. 256KB easily covers several
+// recent turns; if even that's empty of assistant entries the session is fresh.
+function readJsonlTail(path: string, maxBytes: number = 256 * 1024): string {
+  const st = statSync(path)
+  if (st.size <= maxBytes) return readFileSync(path, 'utf8')
+  const fd = openSync(path, 'r')
+  try {
+    const buf = Buffer.alloc(maxBytes)
+    readSync(fd, buf, 0, maxBytes, st.size - maxBytes)
+    return buf.toString('utf8')
+  } finally {
+    closeSync(fd)
+  }
+}
+
+type ContextSnapshot = {
+  inputTokens: number
+  cacheRead: number
+  cacheCreation: number
+  outputTokens: number
+  total: number
+  model: string
+}
+
+function parseLastUsage(text: string): ContextSnapshot | null {
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    let entry: { type?: string; message?: { usage?: Record<string, unknown>; model?: string } }
+    try { entry = JSON.parse(line) } catch { continue } // tail can start mid-line
+    if (entry?.type !== 'assistant') continue
+    const usage = entry?.message?.usage
+    if (!usage) continue
+    const inputTokens = Number(usage.input_tokens ?? 0)
+    const cacheRead = Number(usage.cache_read_input_tokens ?? 0)
+    const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0)
+    const outputTokens = Number(usage.output_tokens ?? 0)
+    return {
+      inputTokens, cacheRead, cacheCreation, outputTokens,
+      total: inputTokens + cacheRead + cacheCreation,
+      model: typeof entry.message?.model === 'string' ? entry.message.model : 'unknown',
+    }
+  }
+  return null
+}
+
+function fmtNum(n: number): string {
+  return n.toLocaleString('en-US')
+}
+
 // Commands are DM-only. Responding in groups would: (1) leak pairing codes via
 // /status to other group members, (2) confirm bot presence in non-allowlisted
 // groups, (3) spam channels the operator never approved. Silent drop matches
@@ -744,7 +830,49 @@ bot.command('help', async ctx => {
     `Text and photos are forwarded; replies and reactions come back.\n\n` +
     `/start — pairing instructions\n` +
     `/status — check your pairing state\n` +
+    `/context — show current session token usage\n` +
     `/newsession — restart the bridge with a fresh Claude context`
+  )
+})
+
+bot.command('context', async ctx => {
+  if (!dmCommandGate(ctx)) return
+  const jsonl = findSessionJsonl()
+  if (!jsonl) {
+    await ctx.reply(
+      `No session transcript under ~/.claude/projects/${projectDirHash(process.cwd())}/\n` +
+      `(bridge cwd: ${process.cwd()})`,
+    )
+    return
+  }
+  let snap: ContextSnapshot | null = null
+  try {
+    snap = parseLastUsage(readJsonlTail(jsonl))
+  } catch (err) {
+    await ctx.reply(`Failed to read transcript: ${err instanceof Error ? err.message : err}`)
+    return
+  }
+  if (!snap) {
+    await ctx.reply('No assistant turns logged yet — context is essentially empty.')
+    return
+  }
+  // We can't tell from the model string alone whether the loaded variant is
+  // 200k or 1M (Opus 4.x / Sonnet 4.x ship both), so we show both percentages
+  // and let the user pick. Older models default to the 200k figure.
+  const isLargeFamily = /opus-4|sonnet-4/.test(snap.model)
+  const pct200 = (snap.total / 200_000 * 100).toFixed(0)
+  const pct1M = (snap.total / 1_000_000 * 100).toFixed(0)
+  const fillLine = isLargeFamily
+    ? `~${pct1M}% of 1M · ~${pct200}% of 200k`
+    : `~${pct200}% of 200k`
+  await ctx.reply(
+    `🧠 Context: ${fmtNum(snap.total)} tokens\n` +
+    `   ${fillLine}\n` +
+    `   model: ${snap.model}\n` +
+    `\n` +
+    `Last turn: in ${fmtNum(snap.inputTokens)} · cache_read ${fmtNum(snap.cacheRead)} · cache_creation ${fmtNum(snap.cacheCreation)} · out ${fmtNum(snap.outputTokens)}\n` +
+    `\n` +
+    `/newsession to start fresh.`,
   )
 })
 
@@ -1017,6 +1145,7 @@ void (async () => {
               { command: 'start', description: 'Welcome and setup guide' },
               { command: 'help', description: 'What this bot can do' },
               { command: 'status', description: 'Check your pairing status' },
+              { command: 'context', description: 'Show current session token usage' },
               { command: 'newsession', description: 'Restart with a fresh Claude context' },
             ],
             { scope: { type: 'all_private_chats' } },
