@@ -1,0 +1,36 @@
+# claude-tg-bridge.service — systemd user unit for the Telegram bridge.
+#
+# This is a TEMPLATE. Copy to ~/.config/systemd/user/claude-tg-bridge.service
+# and edit ExecStart= to point at where claude-tg-bridge.sh lives on this host.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/claude-tg-bridge.service ~/.config/systemd/user/
+#   # edit the ExecStart= line below to the absolute path on this host
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now claude-tg-bridge
+#   loginctl enable-linger $USER     # so the unit survives ssh logout
+#
+# Logs:   journalctl --user -u claude-tg-bridge -f
+# Stop:   systemctl --user stop claude-tg-bridge
+# Status: systemctl --user status claude-tg-bridge
+
+[Unit]
+Description=Claude Code Telegram bridge (fct-claude-plugins fork)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Adjust this absolute path to wherever you keep the wrapper script:
+ExecStart=%h/projects/fct-tg-bot/external_plugins/telegram/scripts/claude-tg-bridge.sh
+# systemd user units don't inherit your shell PATH — add the likely places
+# where `claude` and `bun` live so the wrapper finds them:
+Environment=PATH=%h/.bun/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

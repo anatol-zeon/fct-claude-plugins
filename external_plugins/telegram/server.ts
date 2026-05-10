@@ -28,6 +28,34 @@ const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const APPROVED_DIR = join(STATE_DIR, 'approved')
 const ENV_FILE = join(STATE_DIR, '.env')
 
+// Only the dedicated bridge process polls the Telegram bot. Every other
+// session that has this plugin enabled (e.g. VS Code chats) gets its own
+// MCP server spawned by Claude Code per the .mcp.json declaration — but
+// they all share one bot token, and Telegram allows only one getUpdates
+// consumer per token. So non-bridge sessions enter an idle mode: the MCP
+// transport stays alive (so CC's plugin loader sees us), but we don't load
+// the token, don't write bot.pid, and don't start grammy. The wrapper
+// script (scripts/claude-tg-bridge.sh) sets TELEGRAM_BRIDGE=1 to opt in.
+if (process.env.TELEGRAM_BRIDGE !== '1') {
+  process.stderr.write(
+    'telegram channel: idle mode (TELEGRAM_BRIDGE not set).\n' +
+    '  This session is not the bridge process; no bot will be started here.\n' +
+    '  To run the bridge: scripts/claude-tg-bridge.sh (sets TELEGRAM_BRIDGE=1).\n',
+  )
+  const idleMcp = new Server(
+    { name: 'telegram', version: '1.0.0' },
+    { capabilities: {} },
+  )
+  await idleMcp.connect(new StdioServerTransport())
+  const exitOnEnd = (): void => process.exit(0)
+  process.stdin.on('end', exitOnEnd)
+  process.stdin.on('close', exitOnEnd)
+  process.on('SIGTERM', exitOnEnd)
+  process.on('SIGINT', exitOnEnd)
+  process.on('SIGHUP', exitOnEnd)
+  await new Promise<never>(() => {})
+}
+
 // Load ~/.claude/channels/telegram/.env into process.env. Real env wins, but
 // an empty-string value (e.g. from a skipped plugin userConfig prompt
 // substituting `${user_config.bot_token:-}`) counts as missing — otherwise
@@ -715,8 +743,30 @@ bot.command('help', async ctx => {
     `Messages you send here route to a paired Claude Code session. ` +
     `Text and photos are forwarded; replies and reactions come back.\n\n` +
     `/start — pairing instructions\n` +
-    `/status — check your pairing state`
+    `/status — check your pairing state\n` +
+    `/newsession — restart the bridge with a fresh Claude context`
   )
+})
+
+// Restart the bridged Claude session — used when context is full and you want
+// to start over without sshing back into the host. We SIGTERM our parent
+// (the `claude` process), which exits cleanly. The wrapper-loop
+// (scripts/claude-tg-bridge.sh) then iterates and starts a new session
+// with the same env. Without the wrapper, nothing respawns and the bridge
+// just ends — runs of `claude` started manually one-off won't restart.
+bot.command('newsession', async ctx => {
+  if (!dmCommandGate(ctx)) return
+  try {
+    await ctx.reply('🔄 Restarting Claude session — context cleared.')
+  } catch {}
+  if (process.ppid > 1) {
+    try {
+      process.kill(process.ppid, 'SIGTERM')
+    } catch (err) {
+      process.stderr.write(`telegram channel: failed to signal parent: ${err}\n`)
+    }
+  }
+  // Existing SIGTERM/stdin-EOF handlers will tear us down once CC exits.
 })
 
 bot.command('status', async ctx => {
@@ -967,6 +1017,7 @@ void (async () => {
               { command: 'start', description: 'Welcome and setup guide' },
               { command: 'help', description: 'What this bot can do' },
               { command: 'status', description: 'Check your pairing status' },
+              { command: 'newsession', description: 'Restart with a fresh Claude context' },
             ],
             { scope: { type: 'all_private_chats' } },
           ).catch(() => {})

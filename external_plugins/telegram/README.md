@@ -47,23 +47,19 @@ Channels from non-official marketplaces require explicit allow. Add this to `~/.
 
 Without it you'd have to pass `--dangerously-load-development-channels` on every launch.
 
-**4. Restart with the channel flag.**
+**4. Start the dedicated bridge session.**
 
-Channels are opt-in per session. Exit your current session and start a new one with:
-
-```sh
-claude --channels plugin:telegram@fct-claude-plugins
-```
-
-For VS Code users: this flag must be on the command Claude Code is launched with. The easiest path is to alias it in your shell so the VS Code terminal picks it up:
+The bridge is a long-lived Claude session that owns the bot. Other Claude sessions on this host (VS Code chats, ad-hoc terminal runs) intentionally don't touch the bot — they'd just fight over Telegram's single-poller-per-token rule. Use the bundled wrapper:
 
 ```sh
-alias claude-tg='claude --channels plugin:telegram@fct-claude-plugins'
+external_plugins/telegram/scripts/claude-tg-bridge.sh
 ```
+
+It sets `TELEGRAM_BRIDGE=1`, passes `--channels plugin:telegram@fct-claude-plugins --dangerously-skip-permissions`, and auto-restarts the inner session after `/newsession`. For running it under tmux or as a systemd user service so it survives ssh disconnect, see [Run as a background service](#run-as-a-background-service) below.
 
 **5. Pair.**
 
-With Claude Code running from the previous step, DM your bot on Telegram — it replies with a 6-character pairing code. If the bot doesn't respond, make sure your session is running with `--channels`. In your Claude Code session:
+With the bridge running from the previous step, DM your bot on Telegram — it replies with a 6-character pairing code. If the bot doesn't respond, make sure the bridge is up (`tmux attach -t tg-bridge` or `systemctl --user status claude-tg-bridge`). In your Claude Code session (any session, doesn't have to be the bridge):
 
 ```
 /telegram:access pair <code>
@@ -76,6 +72,50 @@ Your next DM reaches the assistant.
 **6. Lock it down.**
 
 Pairing is for capturing IDs. Once you're in, switch to `allowlist` so strangers don't get pairing-code replies. Ask Claude to do it, or `/telegram:access policy allowlist` directly.
+
+## Run as a background service
+
+The bridge is a dedicated Claude session that should keep running independently of any VS Code chat. Other sessions on the host see the plugin's MCP server boot too, but they enter idle mode (stderr line: `telegram channel: idle mode`) and never touch the bot — only the process with `TELEGRAM_BRIDGE=1` polls. The wrapper script sets this for you.
+
+### tmux (interactive)
+
+```sh
+tmux new -d -s tg-bridge external_plugins/telegram/scripts/claude-tg-bridge.sh
+tmux attach -t tg-bridge   # peek at logs
+# Ctrl-b d to detach without stopping it
+```
+
+The tmux server survives ssh disconnect on its own. To stop: `tmux send-keys -t tg-bridge C-c` then `tmux kill-session -t tg-bridge`.
+
+### systemd user unit (unattended)
+
+Recommended for a long-lived dev host. The template lives at [scripts/claude-tg-bridge.service](./scripts/claude-tg-bridge.service):
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp external_plugins/telegram/scripts/claude-tg-bridge.service ~/.config/systemd/user/
+# edit ExecStart= in the copy to the absolute path of claude-tg-bridge.sh
+systemctl --user daemon-reload
+systemctl --user enable --now claude-tg-bridge
+loginctl enable-linger "$USER"     # survive ssh logout
+```
+
+Logs: `journalctl --user -u claude-tg-bridge -f`. Stop: `systemctl --user stop claude-tg-bridge`. Status: `systemctl --user status claude-tg-bridge`.
+
+### Reset context: `/newsession`
+
+DM the bot `/newsession`. The bridge exits its current Claude session; the wrapper-loop restarts a fresh one with empty context. Useful when context fills up or you want to switch tasks without sshing back.
+
+### One-off manual run
+
+For ad-hoc tests without the loop:
+
+```sh
+TELEGRAM_BRIDGE=1 claude --channels plugin:telegram@fct-claude-plugins \
+                          --dangerously-skip-permissions
+```
+
+Without `TELEGRAM_BRIDGE=1` the MCP server stays idle and never talks to Telegram.
 
 ## Access control
 
