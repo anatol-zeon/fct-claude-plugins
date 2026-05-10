@@ -1,0 +1,57 @@
+# Environments and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials*
+secrets*
+*.secret
+.netrc
+.pgpass
+
+# Runtime artifacts
+logs/**
+!logs/.gitkeep
+!logs/**/.gitkeep
+out/**
+!out/.gitkeep
+!out/**/.gitkeep
+tmp/**
+!tmp/.gitkeep
+raw/**
+!raw/.gitkeep
+!raw/**/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node
+node_modules/
+.next/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
