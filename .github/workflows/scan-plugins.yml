@@ -1,0 +1,35 @@
+name: Scan Plugins
+
+on:
+  pull_request:
+    paths:
+      - '.claude-plugin/marketplace.json'
+      - '.github/policy/**'
+  workflow_dispatch:
+    inputs:
+      scan_all:
+        description: Scan every external entry (full re-review). Slow.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Blocking: policy failures fail the job. Loosen by removing
+      # fail-on-findings if the false-positive rate is too high.
+      - uses: anthropics/claude-plugins-community/.github/actions/scan-plugins@b277757588871fe55b2620de8c6dfda470e2e9d8
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          policy-prompt: .github/policy/prompt.md
+          fail-on-findings: "true"
+          scan-all-external: ${{ inputs.scan_all || 'false' }}
+          claude-cli-version: latest

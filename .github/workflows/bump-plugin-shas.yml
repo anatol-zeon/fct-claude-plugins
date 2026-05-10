@@ -1,0 +1,38 @@
+name: Bump Plugin SHAs
+
+# Weekly sweep: for each external entry whose upstream HEAD has moved past
+# its pinned SHA, validate at the new SHA with `claude plugin validate`
+# inline, then open one PR with all passing bumps.
+#
+# Bot-free — uses the default GITHUB_TOKEN. Because GITHUB_TOKEN-opened PRs
+# don't trigger on:pull_request workflows, validation runs in this workflow
+# before the PR is opened; the PR body links back here as the CI evidence.
+
+on:
+  schedule:
+    - cron: '23 7 * * 1'  # Monday 07:23 UTC
+  workflow_dispatch:
+    inputs:
+      max_bumps:
+        description: Cap on plugins bumped this run
+        required: false
+        default: '20'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bump-plugin-shas
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: anthropics/claude-plugins-community/.github/actions/bump-plugin-shas@f846a0bcb0e721b1f93d60e8b73e91dafc4a1e87
+        with:
+          marketplace-path: .claude-plugin/marketplace.json
+          max-bumps: ${{ inputs.max_bumps || '20' }}
+          claude-cli-version: latest
