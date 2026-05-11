@@ -57,9 +57,7 @@ if (process.env.TELEGRAM_BRIDGE !== '1') {
 }
 
 // Load ~/.claude/channels/telegram/.env into process.env. Real env wins, but
-// an empty-string value (e.g. from a skipped plugin userConfig prompt
-// substituting `${user_config.bot_token:-}`) counts as missing — otherwise
-// the .env fallback would be blocked when the prompt was left blank.
+// an empty-string value counts as missing so the .env fallback isn't blocked.
 try {
   // Token is a credential — lock to owner. No-op on Windows (would need ACLs).
   chmodSync(ENV_FILE, 0o600)
@@ -69,15 +67,23 @@ try {
   }
 } catch {}
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN
+// Token sources, in priority order:
+//   1. TELEGRAM_BOT_TOKEN (explicit env, .env file, or shell)
+//   2. CLAUDE_PLUGIN_OPTION_BOT_TOKEN (auto-exported by CC when the plugin's
+//      top-level userConfig `bot_token` is filled via /plugin manage)
+// We don't substitute user_config.bot_token in .mcp.json: that path needs
+// the option to actually be set at plugin-load time or CC fails the manifest
+// parse, which would brick the .env fallback too. Reading the env var that
+// CC auto-exports has no such precondition.
+const TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN || process.env.CLAUDE_PLUGIN_OPTION_BOT_TOKEN
 const STATIC = process.env.TELEGRAM_ACCESS_MODE === 'static'
 
 if (!TOKEN) {
   process.stderr.write(
     `telegram channel: TELEGRAM_BOT_TOKEN required\n` +
-    `  fill the plugin's "Bot token" prompt in /plugins,\n` +
-    `  or set it in ${ENV_FILE}\n` +
-    `  (format: TELEGRAM_BOT_TOKEN=123456789:AAH...).\n`,
+    `  run /telegram:configure <token> to save it to ${ENV_FILE},\n` +
+    `  or fill the plugin's "Bot token" option via /plugin manage.\n`,
   )
   process.exit(1)
 }
