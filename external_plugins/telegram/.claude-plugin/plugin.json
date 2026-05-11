@@ -1,24 +1,24 @@
 {
   "name": "telegram",
   "description": "Telegram channel for Claude Code — messaging bridge with built-in access control. Manage pairing, allowlists, and policy via /telegram:access.",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "keywords": [
     "telegram",
     "messaging",
     "channel",
     "mcp"
   ],
+  "userConfig": {
+    "bot_token": {
+      "type": "string",
+      "title": "Bot token",
+      "description": "Token from @BotFather (format: 123456789:AAH...). Stored in your system keychain. Leave blank if you prefer to set it later via /telegram:configure <token>.",
+      "sensitive": true
+    }
+  },
   "channels": [
     {
-      "server": "telegram",
-      "userConfig": {
-        "bot_token": {
-          "type": "string",
-          "title": "Bot token",
-          "description": "Token from @BotFather (format: 123456789:AAH...). Stored in your system keychain. Leave blank if you prefer to set it later via /telegram:configure <token>.",
-          "sensitive": true
-        }
-      }
+      "server": "telegram"
     }
   ]
 }
