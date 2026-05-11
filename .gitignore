@@ -55,3 +55,6 @@ coverage/
 .idea/
 *.swp
 .DS_Store
+
+# Tool logs
+excalidraw.log
