@@ -106,6 +106,10 @@ Logs: `journalctl --user -u claude-tg-bridge -f`. Stop: `systemctl --user stop c
 
 DM the bot `/context` to get the current Claude session's token usage — total context tokens, model, last-turn breakdown, and `~%` against both the 200k and 1M context windows (the variant in use isn't recoverable from the model string alone, so we show both). The MCP server reads the session's transcript jsonl directly under `~/.claude/projects/`, so this works without any Claude-side cooperation.
 
+#### Proactive fill warnings
+
+Set `TELEGRAM_CONTEXT_THRESHOLD` to an absolute token count in the bridge process's env and the server will push a warning to all allowlisted DMs once the session crosses it. Tuned for the model you actually use — e.g. `800000` for "warn at 80% of a 1M-context model", `160000` for 80% of 200k. Off by default. Polls the jsonl every 60s; pushes once on crossing and again only after another 5% has been added, so it won't spam. Add to the systemd unit's `Environment=` line or `export` it in the wrapper script.
+
 ### Reset context: `/newsession`
 
 DM the bot `/newsession`. The bridge exits its current Claude session; the wrapper-loop restarts a fresh one with empty context. Useful when context fills up or you want to switch tasks without sshing back.

@@ -382,6 +382,45 @@ function checkApprovals(): void {
 
 if (!STATIC) setInterval(checkApprovals, 5000).unref()
 
+// Optional proactive context-fill warning. Disabled by default — set
+// TELEGRAM_CONTEXT_THRESHOLD to an absolute token count (e.g. 800000 for
+// "warn at 80% of a 1M-context model", 160000 for 80% of 200k). Polls the
+// session jsonl every 60s. Pushes once on threshold crossing, then again
+// only after another 5% of the threshold has been added (to avoid spam).
+// Resets when context drops back below the threshold (e.g. after /newsession).
+const CONTEXT_THRESHOLD = Math.max(0, parseInt(process.env.TELEGRAM_CONTEXT_THRESHOLD ?? '0', 10) || 0)
+if (CONTEXT_THRESHOLD > 0) {
+  let lastPushedAt = 0
+  setInterval(() => {
+    const jsonl = findSessionJsonl()
+    if (!jsonl) return
+    let snap: ContextSnapshot | null = null
+    try { snap = parseLastUsage(readJsonlTail(jsonl)) } catch { return }
+    if (!snap) return
+    if (snap.total < CONTEXT_THRESHOLD) {
+      lastPushedAt = 0
+      return
+    }
+    const stepGrowth = CONTEXT_THRESHOLD * 0.05
+    if (lastPushedAt !== 0 && snap.total - lastPushedAt < stepGrowth) return
+    const access = loadAccess()
+    const msg =
+      `⚠️ Context at ${fmtNum(snap.total)} tokens ` +
+      `(threshold ${fmtNum(CONTEXT_THRESHOLD)}).\n` +
+      `model: ${snap.model}\n` +
+      `Consider /newsession.`
+    for (const chat_id of access.allowFrom) {
+      void bot.api.sendMessage(chat_id, msg).catch(err => {
+        process.stderr.write(`telegram channel: threshold push to ${chat_id} failed: ${err}\n`)
+      })
+    }
+    lastPushedAt = snap.total
+  }, 60_000).unref()
+  process.stderr.write(
+    `telegram channel: context-fill warnings enabled at ${CONTEXT_THRESHOLD.toLocaleString('en-US')} tokens\n`,
+  )
+}
+
 // Telegram caps messages at 4096 chars. Split long replies, preferring
 // paragraph boundaries when chunkMode is 'newline'.
 
