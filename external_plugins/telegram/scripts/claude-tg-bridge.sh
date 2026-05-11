@@ -30,22 +30,33 @@ if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then
   echo "[tg-bridge] 'claude' binary not found in PATH. Set CLAUDE_BIN env to override." >&2
   exit 1
 fi
+export CLAUDE_BIN
+
+# The dev-channels wrapper attaches claude to a pty and auto-confirms the
+# one-time "Loading development channels" warning. We can't use --channels
+# directly because this fork isn't on Anthropic's curated channel-plugin
+# allowlist; --dangerously-load-development-channels bypasses the allowlist
+# but adds an interactive prompt per session, which would block unattended
+# operation in tmux/systemd. The python helper handles that.
+HELPER="$(dirname "$0")/claude-with-dev-channels.py"
+if [ ! -x "$HELPER" ]; then
+  echo "[tg-bridge] helper not executable: $HELPER" >&2
+  exit 1
+fi
+if ! python3 -c "import pexpect" >/dev/null 2>&1; then
+  echo "[tg-bridge] python3 pexpect module required: pip install --user pexpect" >&2
+  exit 1
+fi
 
 export TELEGRAM_BRIDGE=1
 
 trap 'echo "[tg-bridge] stopped" >&2; exit 0' INT TERM
 
-echo "[tg-bridge] --channels plugin:${TG_BRIDGE_PLUGIN}@${TG_BRIDGE_MARKETPLACE}" >&2
+echo "[tg-bridge] --dangerously-load-development-channels plugin:${TG_BRIDGE_PLUGIN}@${TG_BRIDGE_MARKETPLACE}" >&2
 echo "[tg-bridge] claude: $CLAUDE_BIN" >&2
 
 while true; do
-  # --dangerously-load-development-channels takes the same `plugin:<name>@<marketplace>`
-  # entries that --channels does, and it bypasses Anthropic's official
-  # allowlist check (which our fork is not on). It replaces --channels for
-  # non-allowlisted plugins; passing both produces a conflict error.
-  # The "dangerous" framing is for unvetted MCP servers in general — here
-  # the server is the one in this very repo, under your direct control.
-  "$CLAUDE_BIN" \
+  "$HELPER" \
     --dangerously-load-development-channels "plugin:${TG_BRIDGE_PLUGIN}@${TG_BRIDGE_MARKETPLACE}" \
     --dangerously-skip-permissions \
     "$@"

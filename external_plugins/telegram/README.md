@@ -7,6 +7,7 @@ The MCP server logs into Telegram as a bot and provides tools to Claude to reply
 ## Prerequisites
 
 - [Bun](https://bun.sh) — the MCP server runs on Bun. Install with `curl -fsSL https://bun.sh/install | bash`.
+- Python 3 with [`pexpect`](https://pypi.org/project/pexpect/) — only for the background-service wrapper (`scripts/claude-tg-bridge.sh`), which uses it to auto-confirm the one-time `--dangerously-load-development-channels` prompt. `pip install --user pexpect` if `python3 -c 'import pexpect'` fails.
 
 ## Quick Setup
 > Default pairing flow for a single-user DM bot. See [ACCESS.md](./ACCESS.md) for groups and multi-user setups.
@@ -29,7 +30,13 @@ In a Claude Code session:
 /plugin install telegram@fct-claude-plugins
 ```
 
-When the plugin is enabled, Claude Code prompts for **Bot token** — paste the BotFather token. It's stored in your system keychain. You can leave the prompt blank now and set it later with `/telegram:configure <token>`.
+Then save the bot token. In any Claude Code session:
+
+```
+/telegram:configure 123456789:AAH...
+```
+
+This writes it to `~/.claude/channels/telegram/.env` (chmod 600) and validates it against Telegram's `getMe`. The plugin also declares a `bot_token` userConfig option, so `/plugin manage` will offer a keychain-backed prompt for it — but as of CC 2.1.138 `/plugin install` doesn't surface that prompt automatically, so `/telegram:configure` is the reliable path.
 
 > Multiple bots on one machine: point `TELEGRAM_STATE_DIR` at a different directory per instance.
 
@@ -41,7 +48,13 @@ The bridge is a long-lived Claude session that owns the bot. Other Claude sessio
 external_plugins/telegram/scripts/claude-tg-bridge.sh
 ```
 
-It sets `TELEGRAM_BRIDGE=1`, passes `--channels plugin:telegram@fct-claude-plugins --dangerously-load-development-channels --dangerously-skip-permissions`, and auto-restarts the inner session after `/newsession`. The `--dangerously-load-development-channels` flag is necessary because this fork isn't on Anthropic's official channel-plugin allowlist; without it, CC starts but the channel is rejected and inbound TG messages never reach Claude. For running it under tmux or as a systemd user service so it survives ssh disconnect, see [Run as a background service](#run-as-a-background-service) below.
+What the wrapper does:
+
+- Sets `TELEGRAM_BRIDGE=1` so the MCP server in this session is the one that owns the bot (others stay idle — see [Run as a background service](#run-as-a-background-service)).
+- Launches `claude --dangerously-load-development-channels plugin:telegram@fct-claude-plugins --dangerously-skip-permissions` via a small pexpect helper (`scripts/claude-with-dev-channels.py`). The dev-channels flag is required because this fork isn't on Anthropic's curated channel-plugin allowlist — plain `--channels` would refuse to register it. That flag also pops a one-time "Loading development channels" confirmation menu; the helper auto-presses Enter so the loop runs unattended.
+- Re-runs the inner session after it exits (`/newsession`, crash, etc.).
+
+For running it under tmux or as a systemd user service so it survives ssh disconnect, see [Run as a background service](#run-as-a-background-service) below.
 
 **4. Pair.**
 
