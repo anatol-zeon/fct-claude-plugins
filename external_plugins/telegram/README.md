@@ -33,21 +33,7 @@ When the plugin is enabled, Claude Code prompts for **Bot token** — paste the 
 
 > Multiple bots on one machine: point `TELEGRAM_STATE_DIR` at a different directory per instance.
 
-**3. Whitelist the channel (one-time settings edit).**
-
-Channels from non-official marketplaces require explicit allow. Add this to `~/.claude/settings.json` once:
-
-```json
-{
-  "allowedChannelPlugins": [
-    { "marketplace": "fct-claude-plugins", "plugin": "telegram" }
-  ]
-}
-```
-
-Without it you'd have to pass `--dangerously-load-development-channels` on every launch.
-
-**4. Start the dedicated bridge session.**
+**3. Start the dedicated bridge session.**
 
 The bridge is a long-lived Claude session that owns the bot. Other Claude sessions on this host (VS Code chats, ad-hoc terminal runs) intentionally don't touch the bot — they'd just fight over Telegram's single-poller-per-token rule. Use the bundled wrapper:
 
@@ -55,9 +41,9 @@ The bridge is a long-lived Claude session that owns the bot. Other Claude sessio
 external_plugins/telegram/scripts/claude-tg-bridge.sh
 ```
 
-It sets `TELEGRAM_BRIDGE=1`, passes `--channels plugin:telegram@fct-claude-plugins --dangerously-skip-permissions`, and auto-restarts the inner session after `/newsession`. For running it under tmux or as a systemd user service so it survives ssh disconnect, see [Run as a background service](#run-as-a-background-service) below.
+It sets `TELEGRAM_BRIDGE=1`, passes `--channels plugin:telegram@fct-claude-plugins --dangerously-load-development-channels --dangerously-skip-permissions`, and auto-restarts the inner session after `/newsession`. The `--dangerously-load-development-channels` flag is necessary because this fork isn't on Anthropic's official channel-plugin allowlist; without it, CC starts but the channel is rejected and inbound TG messages never reach Claude. For running it under tmux or as a systemd user service so it survives ssh disconnect, see [Run as a background service](#run-as-a-background-service) below.
 
-**5. Pair.**
+**4. Pair.**
 
 With the bridge running from the previous step, DM your bot on Telegram — it replies with a 6-character pairing code. If the bot doesn't respond, make sure the bridge is up (`tmux attach -t tg-bridge` or `systemctl --user status claude-tg-bridge`). In your Claude Code session (any session, doesn't have to be the bridge):
 
@@ -69,7 +55,7 @@ Your next DM reaches the assistant.
 
 > Unlike Discord, there's no server invite step — Telegram bots accept DMs immediately. Pairing handles the user-ID lookup so you never touch numeric IDs.
 
-**6. Lock it down.**
+**5. Lock it down.**
 
 Pairing is for capturing IDs. Once you're in, switch to `allowlist` so strangers don't get pairing-code replies. Ask Claude to do it, or `/telegram:access policy allowlist` directly.
 
