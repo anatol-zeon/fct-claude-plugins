@@ -39,15 +39,14 @@ echo "[tg-bridge] --channels plugin:${TG_BRIDGE_PLUGIN}@${TG_BRIDGE_MARKETPLACE}
 echo "[tg-bridge] claude: $CLAUDE_BIN" >&2
 
 while true; do
-  # --dangerously-load-development-channels: this fork is not on Anthropic's
-  # official channel-plugin allowlist. Without it, CC starts but refuses to
-  # register the channel ("not on the approved channels allowlist"), so
-  # inbound TG messages would never reach Claude. The "dangerous" framing is
-  # for unvetted MCP servers — this server is the one in this very repo,
-  # under your direct control.
+  # --dangerously-load-development-channels takes the same `plugin:<name>@<marketplace>`
+  # entries that --channels does, and it bypasses Anthropic's official
+  # allowlist check (which our fork is not on). It replaces --channels for
+  # non-allowlisted plugins; passing both produces a conflict error.
+  # The "dangerous" framing is for unvetted MCP servers in general — here
+  # the server is the one in this very repo, under your direct control.
   "$CLAUDE_BIN" \
-    --channels "plugin:${TG_BRIDGE_PLUGIN}@${TG_BRIDGE_MARKETPLACE}" \
-    --dangerously-load-development-channels \
+    --dangerously-load-development-channels "plugin:${TG_BRIDGE_PLUGIN}@${TG_BRIDGE_MARKETPLACE}" \
     --dangerously-skip-permissions \
     "$@"
   rc=$?
