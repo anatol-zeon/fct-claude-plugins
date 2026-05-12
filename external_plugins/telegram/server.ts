@@ -19,9 +19,23 @@ import { z } from 'zod'
 import { Bot, GrammyError, InputFile, type Context } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes } from 'crypto'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync, openSync, closeSync, readSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, realpathSync, chmodSync } from 'fs'
 import { homedir } from 'os'
 import { join, extname, sep } from 'path'
+import { chunk, MAX_CHUNK_LIMIT, PHOTO_EXTS } from './src/text'
+import { matchPermissionReply } from './src/permissions'
+import { safeName, safeExt, safeId } from './src/sanitize'
+import {
+  parseLastUsage, readJsonlTail, fmtNum, fillLine, projectDirHash,
+  findSessionJsonl as findSessionJsonlIn, type ContextSnapshot,
+} from './src/transcript'
+import { isMentioned } from './src/mentions'
+import {
+  pruneExpired, gate as gateInbound, dmCommandGate as dmCommandCheck,
+  assertAllowedChat as assertAllowedChatIn,
+  readAccessFile as readAccessFromDisk, saveAccess as writeAccessToDisk,
+  type Access,
+} from './src/access'
 
 const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'telegram')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -114,56 +128,21 @@ process.on('uncaughtException', err => {
   process.stderr.write(`telegram channel: uncaught exception: ${err}\n`)
 })
 
-// Permission-reply spec from anthropics/claude-cli-internal
-// src/services/mcp/channelPermissions.ts — inlined (no CC repo dep).
-// 5 lowercase letters a-z minus 'l'. Case-insensitive for phone autocorrect.
-// Strict: no bare yes/no (conversational), no prefix/suffix chatter.
-const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
-
 const bot = new Bot(TOKEN)
 let botUsername = ''
 
-type PendingEntry = {
-  senderId: string
-  chatId: string
-  createdAt: number
-  expiresAt: number
-  replies: number
-}
+// Access state machine (types, gate, pairing lifecycle, persistence) lives in
+// src/access.ts. Here we layer on STATE_DIR resolution and static mode, and
+// supply Date.now()/randomBytes/botUsername at the call sites.
 
-type GroupPolicy = {
-  requireMention: boolean
-  allowFrom: string[]
-}
-
-type Access = {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
-  allowFrom: string[]
-  groups: Record<string, GroupPolicy>
-  pending: Record<string, PendingEntry>
-  mentionPatterns?: string[]
-  // delivery/UX config — optional, defaults live in the reply handler
-  /** Emoji to react with on receipt. Empty string disables. Telegram only accepts its fixed whitelist. */
-  ackReaction?: string
-  /** Which chunks get Telegram's reply reference when reply_to is passed. Default: 'first'. 'off' = never thread. */
-  replyToMode?: 'off' | 'first' | 'all'
-  /** Max chars per outbound message before splitting. Default: 4096 (Telegram's hard cap). */
-  textChunkLimit?: number
-  /** Split on paragraph boundaries instead of hard char count. */
-  chunkMode?: 'length' | 'newline'
-}
-
-function defaultAccess(): Access {
-  return {
-    dmPolicy: 'pairing',
-    allowFrom: [],
-    groups: {},
-    pending: {},
-  }
-}
-
-const MAX_CHUNK_LIMIT = 4096
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+// /context — session token usage. Transcript parsing/IO lives in
+// src/transcript.ts; this just supplies the projects root + cwd for *this*
+// bridge session (the bridge is the only non-idle session, so "freshest jsonl
+// under our cwd" resolves to it).
+const currentSessionJsonl = (): string | null =>
+  findSessionJsonlIn(join(homedir(), '.claude', 'projects'), process.cwd())
 
 // reply's files param takes any path. .env is ~60 bytes and ships as a
 // document. Claude can already Read+paste file contents, so this isn't a new
@@ -181,30 +160,7 @@ function assertSendable(f: string): void {
   }
 }
 
-function readAccessFile(): Access {
-  try {
-    const raw = readFileSync(ACCESS_FILE, 'utf8')
-    const parsed = JSON.parse(raw) as Partial<Access>
-    return {
-      dmPolicy: parsed.dmPolicy ?? 'pairing',
-      allowFrom: parsed.allowFrom ?? [],
-      groups: parsed.groups ?? {},
-      pending: parsed.pending ?? {},
-      mentionPatterns: parsed.mentionPatterns,
-      ackReaction: parsed.ackReaction,
-      replyToMode: parsed.replyToMode,
-      textChunkLimit: parsed.textChunkLimit,
-      chunkMode: parsed.chunkMode,
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return defaultAccess()
-    try {
-      renameSync(ACCESS_FILE, `${ACCESS_FILE}.corrupt-${Date.now()}`)
-    } catch {}
-    process.stderr.write(`telegram channel: access.json is corrupt, moved aside. Starting fresh.\n`)
-    return defaultAccess()
-  }
-}
+const readAccessFile = (): Access => readAccessFromDisk(ACCESS_FILE)
 
 // In static mode, access is snapshotted at boot and never re-read or written.
 // Pairing requires runtime mutation, so it's downgraded to allowlist with a
@@ -230,30 +186,12 @@ function loadAccess(): Access {
 // Outbound gate — reply/react/edit can only target chats the inbound gate
 // would deliver from. Telegram DM chat_id == user_id, so allowFrom covers DMs.
 function assertAllowedChat(chat_id: string): void {
-  const access = loadAccess()
-  if (access.allowFrom.includes(chat_id)) return
-  if (chat_id in access.groups) return
-  throw new Error(`chat ${chat_id} is not allowlisted — add via /telegram:access`)
+  assertAllowedChatIn(chat_id, loadAccess())
 }
 
 function saveAccess(a: Access): void {
   if (STATIC) return
-  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-  const tmp = ACCESS_FILE + '.tmp'
-  writeFileSync(tmp, JSON.stringify(a, null, 2) + '\n', { mode: 0o600 })
-  renameSync(tmp, ACCESS_FILE)
-}
-
-function pruneExpired(a: Access): boolean {
-  const now = Date.now()
-  let changed = false
-  for (const [code, p] of Object.entries(a.pending)) {
-    if (p.expiresAt < now) {
-      delete a.pending[code]
-      changed = true
-    }
-  }
-  return changed
+  writeAccessToDisk(a, STATE_DIR, ACCESS_FILE)
 }
 
 type GateResult =
@@ -263,101 +201,23 @@ type GateResult =
 
 function gate(ctx: Context): GateResult {
   const access = loadAccess()
-  const pruned = pruneExpired(access)
-  if (pruned) saveAccess(access)
-
-  if (access.dmPolicy === 'disabled') return { action: 'drop' }
-
-  const from = ctx.from
-  if (!from) return { action: 'drop' }
-  const senderId = String(from.id)
-  const chatType = ctx.chat?.type
-
-  if (chatType === 'private') {
-    if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
-    if (access.dmPolicy === 'allowlist') return { action: 'drop' }
-
-    // pairing mode — check for existing non-expired code for this sender
-    for (const [code, p] of Object.entries(access.pending)) {
-      if (p.senderId === senderId) {
-        // Reply twice max (initial + one reminder), then go silent.
-        if ((p.replies ?? 1) >= 2) return { action: 'drop' }
-        p.replies = (p.replies ?? 1) + 1
-        saveAccess(access)
-        return { action: 'pair', code, isResend: true }
-      }
-    }
-    // Cap pending at 3. Extra attempts are silently dropped.
-    if (Object.keys(access.pending).length >= 3) return { action: 'drop' }
-
-    const code = randomBytes(3).toString('hex') // 6 hex chars
-    const now = Date.now()
-    access.pending[code] = {
-      senderId,
-      chatId: String(ctx.chat!.id),
-      createdAt: now,
-      expiresAt: now + 60 * 60 * 1000, // 1h
-      replies: 1,
-    }
-    saveAccess(access)
-    return { action: 'pair', code, isResend: false }
-  }
-
-  if (chatType === 'group' || chatType === 'supergroup') {
-    const groupId = String(ctx.chat!.id)
-    const policy = access.groups[groupId]
-    if (!policy) return { action: 'drop' }
-    const groupAllowFrom = policy.allowFrom ?? []
-    const requireMention = policy.requireMention ?? true
-    if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
-      return { action: 'drop' }
-    }
-    if (requireMention && !isMentioned(ctx, access.mentionPatterns)) {
-      return { action: 'drop' }
-    }
-    return { action: 'deliver', access }
-  }
-
-  return { action: 'drop' }
+  const { result, mutated } = gateInbound(
+    ctx,
+    access,
+    () => isMentioned(ctx.message ?? {}, botUsername, access.mentionPatterns),
+    { now: Date.now(), genCode: () => randomBytes(3).toString('hex') },
+  )
+  if (mutated) saveAccess(access)
+  return result.action === 'deliver' ? { action: 'deliver', access } : result
 }
 
 // Like gate() but for bot commands: no pairing side effects, just allow/drop.
 function dmCommandGate(ctx: Context): { access: Access; senderId: string } | null {
-  if (ctx.chat?.type !== 'private') return null
-  if (!ctx.from) return null
-  const senderId = String(ctx.from.id)
+  if (ctx.chat?.type !== 'private' || !ctx.from) return null // skip the disk read for group commands
   const access = loadAccess()
-  const pruned = pruneExpired(access)
-  if (pruned) saveAccess(access)
-  if (access.dmPolicy === 'disabled') return null
-  if (access.dmPolicy === 'allowlist' && !access.allowFrom.includes(senderId)) return null
-  return { access, senderId }
-}
-
-function isMentioned(ctx: Context, extraPatterns?: string[]): boolean {
-  const entities = ctx.message?.entities ?? ctx.message?.caption_entities ?? []
-  const text = ctx.message?.text ?? ctx.message?.caption ?? ''
-  for (const e of entities) {
-    if (e.type === 'mention') {
-      const mentioned = text.slice(e.offset, e.offset + e.length)
-      if (mentioned.toLowerCase() === `@${botUsername}`.toLowerCase()) return true
-    }
-    if (e.type === 'text_mention' && e.user?.is_bot && e.user.username === botUsername) {
-      return true
-    }
-  }
-
-  // Reply to one of our messages counts as an implicit mention.
-  if (ctx.message?.reply_to_message?.from?.username === botUsername) return true
-
-  for (const pat of extraPatterns ?? []) {
-    try {
-      if (new RegExp(pat, 'i').test(text)) return true
-    } catch {
-      // Invalid user-supplied regex — skip it.
-    }
-  }
-  return false
+  if (pruneExpired(access, Date.now())) saveAccess(access)
+  const g = dmCommandCheck(ctx, access)
+  return g ? { access, senderId: g.senderId } : null
 }
 
 // The /telegram:access skill drops a file at approved/<senderId> when it pairs
@@ -398,7 +258,7 @@ const CONTEXT_THRESHOLD = Math.max(0, parseInt(process.env.TELEGRAM_CONTEXT_THRE
 if (CONTEXT_THRESHOLD > 0) {
   let lastPushedAt = 0
   setInterval(() => {
-    const jsonl = findSessionJsonl()
+    const jsonl = currentSessionJsonl()
     if (!jsonl) return
     let snap: ContextSnapshot | null = null
     try { snap = parseLastUsage(readJsonlTail(jsonl)) } catch { return }
@@ -426,34 +286,6 @@ if (CONTEXT_THRESHOLD > 0) {
     `telegram channel: context-fill warnings enabled at ${CONTEXT_THRESHOLD.toLocaleString('en-US')} tokens\n`,
   )
 }
-
-// Telegram caps messages at 4096 chars. Split long replies, preferring
-// paragraph boundaries when chunkMode is 'newline'.
-
-function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
-  if (text.length <= limit) return [text]
-  const out: string[] = []
-  let rest = text
-  while (rest.length > limit) {
-    let cut = limit
-    if (mode === 'newline') {
-      // Prefer the last double-newline (paragraph), then single newline,
-      // then space. Fall back to hard cut.
-      const para = rest.lastIndexOf('\n\n', limit)
-      const line = rest.lastIndexOf('\n', limit)
-      const space = rest.lastIndexOf(' ', limit)
-      cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
-    }
-    out.push(rest.slice(0, cut))
-    rest = rest.slice(cut).replace(/^\n+/, '')
-  }
-  if (rest) out.push(rest)
-  return out
-}
-
-// .jpg/.jpeg/.png/.gif/.webp go as photos (Telegram compresses + shows inline);
-// everything else goes as documents (raw file, no compression).
-const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
 
 const mcp = new Server(
   { name: 'telegram', version: '1.0.0' },
@@ -692,12 +524,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const res = await fetch(url)
         if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
         const buf = Buffer.from(await res.arrayBuffer())
-        // file_path is from Telegram (trusted), but strip to safe chars anyway
-        // so nothing downstream can be tricked by an unexpected extension.
-        const rawExt = file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'bin'
-        const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-        const uniqueId = (file.file_unique_id ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'dl'
-        const path = join(INBOX_DIR, `${Date.now()}-${uniqueId}.${ext}`)
+        // file_path / file_unique_id are from Telegram (trusted), but scrub to
+        // safe chars anyway so nothing downstream can be tricked.
+        const path = join(INBOX_DIR, `${Date.now()}-${safeId(file.file_unique_id)}.${safeExt(file.file_path)}`)
         mkdirSync(INBOX_DIR, { recursive: true })
         writeFileSync(path, buf)
         return { content: [{ type: 'text', text: path }] }
@@ -766,92 +595,6 @@ setInterval(() => {
   if (orphaned) shutdown()
 }, 5000).unref()
 
-// ─── /context — session token usage ─────────────────────────────────────────
-//
-// Claude Code logs each session to ~/.claude/projects/<cwd-encoded>/<session-id>.jsonl,
-// appending one JSON line per turn. The `assistant`-type entries carry
-// `message.usage` with cache_read + cache_creation + input_tokens — the prompt
-// size the model saw on that turn, which is effectively the current context
-// usage. We tail the file, find the most recent such entry, and report it.
-//
-// We don't get a session_id env var, but the bridge is the only active session
-// here (others are gated to idle), so "freshest jsonl under our cwd" reliably
-// resolves to this session.
-
-function projectDirHash(cwd: string): string {
-  // CC encodes the abs path by replacing `/` and `.` with `-`. The leading
-  // slash becomes a leading dash. Matches the directory names actually
-  // present under ~/.claude/projects/.
-  return cwd.replace(/[/.]/g, '-')
-}
-
-function findSessionJsonl(): string | null {
-  const dir = join(homedir(), '.claude', 'projects', projectDirHash(process.cwd()))
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return null }
-  const candidates = entries
-    .filter(n => n.endsWith('.jsonl'))
-    .map(n => {
-      const p = join(dir, n)
-      try { return { path: p, mtime: statSync(p).mtimeMs } } catch { return null }
-    })
-    .filter((x): x is { path: string; mtime: number } => x != null)
-    .sort((a, b) => b.mtime - a.mtime)
-  return candidates[0]?.path ?? null
-}
-
-// Read at most maxBytes from the end of the file so a long-lived session's
-// multi-MB jsonl doesn't make /context slow. 256KB easily covers several
-// recent turns; if even that's empty of assistant entries the session is fresh.
-function readJsonlTail(path: string, maxBytes: number = 256 * 1024): string {
-  const st = statSync(path)
-  if (st.size <= maxBytes) return readFileSync(path, 'utf8')
-  const fd = openSync(path, 'r')
-  try {
-    const buf = Buffer.alloc(maxBytes)
-    readSync(fd, buf, 0, maxBytes, st.size - maxBytes)
-    return buf.toString('utf8')
-  } finally {
-    closeSync(fd)
-  }
-}
-
-type ContextSnapshot = {
-  inputTokens: number
-  cacheRead: number
-  cacheCreation: number
-  outputTokens: number
-  total: number
-  model: string
-}
-
-function parseLastUsage(text: string): ContextSnapshot | null {
-  const lines = text.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim()
-    if (!line) continue
-    let entry: { type?: string; message?: { usage?: Record<string, unknown>; model?: string } }
-    try { entry = JSON.parse(line) } catch { continue } // tail can start mid-line
-    if (entry?.type !== 'assistant') continue
-    const usage = entry?.message?.usage
-    if (!usage) continue
-    const inputTokens = Number(usage.input_tokens ?? 0)
-    const cacheRead = Number(usage.cache_read_input_tokens ?? 0)
-    const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0)
-    const outputTokens = Number(usage.output_tokens ?? 0)
-    return {
-      inputTokens, cacheRead, cacheCreation, outputTokens,
-      total: inputTokens + cacheRead + cacheCreation,
-      model: typeof entry.message?.model === 'string' ? entry.message.model : 'unknown',
-    }
-  }
-  return null
-}
-
-function fmtNum(n: number): string {
-  return n.toLocaleString('en-US')
-}
-
 // Commands are DM-only. Responding in groups would: (1) leak pairing codes via
 // /status to other group members, (2) confirm bot presence in non-allowlisted
 // groups, (3) spam channels the operator never approved. Silent drop matches
@@ -882,7 +625,7 @@ bot.command('help', async ctx => {
 
 bot.command('context', async ctx => {
   if (!dmCommandGate(ctx)) return
-  const jsonl = findSessionJsonl()
+  const jsonl = currentSessionJsonl()
   if (!jsonl) {
     await ctx.reply(
       `No session transcript under ~/.claude/projects/${projectDirHash(process.cwd())}/\n` +
@@ -901,18 +644,9 @@ bot.command('context', async ctx => {
     await ctx.reply('No assistant turns logged yet — context is essentially empty.')
     return
   }
-  // We can't tell from the model string alone whether the loaded variant is
-  // 200k or 1M (Opus 4.x / Sonnet 4.x ship both), so we show both percentages
-  // and let the user pick. Older models default to the 200k figure.
-  const isLargeFamily = /opus-4|sonnet-4/.test(snap.model)
-  const pct200 = (snap.total / 200_000 * 100).toFixed(0)
-  const pct1M = (snap.total / 1_000_000 * 100).toFixed(0)
-  const fillLine = isLargeFamily
-    ? `~${pct1M}% of 1M · ~${pct200}% of 200k`
-    : `~${pct200}% of 200k`
   await ctx.reply(
     `🧠 Context: ${fmtNum(snap.total)} tokens\n` +
-    `   ${fillLine}\n` +
+    `   ${fillLine(snap.total, snap.model)}\n` +
     `   model: ${snap.model}\n` +
     `\n` +
     `Last turn: in ${fmtNum(snap.inputTokens)} · cache_read ${fmtNum(snap.cacheRead)} · cache_creation ${fmtNum(snap.cacheCreation)} · out ${fmtNum(snap.outputTokens)}\n` +
@@ -983,8 +717,7 @@ bot.on('message:photo', async ctx => {
       const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
       const res = await fetch(url)
       const buf = Buffer.from(await res.arrayBuffer())
-      const ext = file.file_path.split('.').pop() ?? 'jpg'
-      const path = join(INBOX_DIR, `${Date.now()}-${best.file_unique_id}.${ext}`)
+      const path = join(INBOX_DIR, `${Date.now()}-${safeId(best.file_unique_id)}.${safeExt(file.file_path, 'jpg')}`)
       mkdirSync(INBOX_DIR, { recursive: true })
       writeFileSync(path, buf)
       return path
@@ -1071,13 +804,6 @@ type AttachmentMeta = {
   name?: string
 }
 
-// Filenames and titles are uploader-controlled. They land inside the <channel>
-// notification — delimiter chars would let the uploader break out of the tag
-// or forge a second meta entry.
-function safeName(s: string | undefined): string | undefined {
-  return s?.replace(/[<>\[\]\r\n;]/g, '_')
-}
-
 async function handleInbound(
   ctx: Context,
   text: string,
@@ -1101,21 +827,18 @@ async function handleInbound(
   const chat_id = String(ctx.chat!.id)
   const msgId = ctx.message?.message_id
 
-  // Permission-reply intercept: if this looks like "yes xxxxx" for a
-  // pending permission request, emit the structured event instead of
-  // relaying as chat. The sender is already gate()-approved at this point
-  // (non-allowlisted senders were dropped above), so we trust the reply.
-  const permMatch = PERMISSION_REPLY_RE.exec(text)
-  if (permMatch) {
+  // Permission-reply intercept: if this looks like "y <id>" for a pending
+  // permission request, emit the structured event instead of relaying as chat.
+  // The sender is already gate()-approved at this point (non-allowlisted
+  // senders were dropped above), so we trust the reply.
+  const permReply = matchPermissionReply(text)
+  if (permReply) {
     void mcp.notification({
       method: 'notifications/claude/channel/permission',
-      params: {
-        request_id: permMatch[2]!.toLowerCase(),
-        behavior: permMatch[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny',
-      },
+      params: { request_id: permReply.requestId, behavior: permReply.behavior },
     })
     if (msgId != null) {
-      const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
+      const emoji = permReply.behavior === 'allow' ? '✅' : '❌'
       void bot.api.setMessageReaction(chat_id, msgId, [
         { type: 'emoji', emoji: emoji as ReactionTypeEmoji['emoji'] },
       ]).catch(() => {})
