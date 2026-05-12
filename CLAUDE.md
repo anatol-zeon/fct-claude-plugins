@@ -38,7 +38,14 @@ tmux new -d -s tg-bridge external_plugins/telegram/scripts/claude-tg-bridge.sh
 
 ## 4. Команды тестов
 
-Тестов пока **нет** (тех-долг — см. §8). Целевой минимум: unit на чистые функции `server.ts` (`gate`, `chunk`, `parseLastUsage`, `isMentioned`, `PERMISSION_REPLY_RE`). Раннер по появлении: `cd external_plugins/telegram && bun test`. Дымовая проверка сейчас: `cd external_plugins/telegram && bun install --frozen-lockfile && bun --check server.ts`.
+```bash
+cd external_plugins/telegram
+bun test          # unit-тесты на src/ (gate/access, chunk, parseLastUsage, isMentioned, permission-regex, ...)
+bun run typecheck  # bunx tsc -p tsconfig.json --noEmit (tsc ставится через bunx, не в deps)
+bun --check server.ts   # syntax + top-level (входит в idle mode и паркуется)
+```
+
+Чистая логика вынесена в `external_plugins/telegram/src/` (`text` / `permissions` / `sanitize` / `transcript` / `mentions` / `access`), каждый модуль с `*.test.ts` рядом. `server.ts` — IO/wiring-слой (MCP tools, grammy-хендлеры, lifecycle), его юнитами не покрываем — проверяем через `bun --check` + дымовые запуски (idle / bridge-без-токена).
 
 ## 5. Структура
 
@@ -65,4 +72,8 @@ tmux new -d -s tg-bridge external_plugins/telegram/scripts/claude-tg-bridge.sh
 
 ## 8. Текущий фокус
 
-Закрыть тех-долг до релиза. Сделано в этом заходе: фикс README (`download_attachment`, single-user-фрейминг), `--frozen-lockfile` в `start`, заполнены `docs/deps.md` / `docs/apis.md` / этот файл / `CHANGELOG.md`. Осталось: (1) unit-тесты на чистые функции `server.ts` + разбить файл (1221 LOC vs soft-cap 200); (2) ADR — bridge/idle-архитектура, выбор `grammy`/`pexpect`, размен `--dangerously-skip-permissions`; (3) на релизе — ротация токена + чистка `settings.local.json`; (4) прогон `/review` + `/security-review`. Обновлять через `/revise-claude-md` в конце сессии.
+Закрыть тех-долг до релиза.
+
+**Сделано:** фикс README (`download_attachment`, single-user-фрейминг); `--frozen-lockfile` в `start`; заполнены `docs/deps.md` / `docs/apis.md` / этот файл / `CHANGELOG.md`; ADR-0002/0003/0004 (bridge-архитектура, стек/`pexpect`, размен `--dangerously-skip-permissions`); чистая логика вынесена в `src/` (6 модулей) + `bun:test` (83 теста) + `tsconfig.json` + скрипты `test`/`typecheck`; `server.ts` 1221 → ~940 LOC (остаток — IO/wiring).
+
+**Осталось:** (1) прогон `/review` + `/security-review` на PR; (2) на релизе — ротация токена + удаление `Bash(printf 'TELEGRAM_BOT_TOKEN=...')` из `.claude/settings.local.json` + revoke тестового через BotFather; (3) опционально — дробить `server.ts` дальше (lifecycle/watchdog → `src/lifecycle.ts`, threshold-warning + `/context` команда → `src/context-report.ts`), но это уже diminishing returns. Обновлять через `/revise-claude-md` в конце сессии.
