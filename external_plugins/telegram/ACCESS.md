@@ -43,6 +43,12 @@ Pairing captures the ID automatically. To find one manually, have the person mes
 
 ## Groups
 
+> ⚠️ **Unsupported in this fork.** `fct-claude-plugins` is a single-user, DM-only
+> setup. The group machinery below is inherited from upstream and still in
+> `server.ts` (so it works if you enable it), but it isn't tested or maintained
+> here. The supported steady state is `dmPolicy: allowlist` with your own
+> numeric ID and an empty `groups` object.
+
 Groups are off by default. Opt each one in individually.
 
 ```
