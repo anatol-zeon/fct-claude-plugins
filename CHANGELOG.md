@@ -7,9 +7,12 @@
 ### Added
 - `docs/deps.md`, `docs/apis.md`, проектный `CLAUDE.md` заполнены (были болванки скелета): реестр зависимостей с обоснованием и проверкой лицензий, поверхность плагина (MCP tools/notifications, схема `access.json`, bot-команды, env), проектные правила (single-user, allowlist, pairing-bootstrap, группы не поддерживаются).
 - README: запись `download_attachment` в таблицу tools; явный single-user-фрейминг и пометка про `--dangerously-skip-permissions`-размен.
+- ADR-0002 (bridge + idle mode / single-poller-per-token), ADR-0003 (runtime + library stack: bun / grammy / mcp-sdk / pexpect), ADR-0004 (`--dangerously-skip-permissions` на bridge — размен и митигации).
+- `external_plugins/telegram/src/` — чистая логика вынесена в модули (`text`, `permissions`, `sanitize`, `transcript`, `mentions`, `access`) с `bun:test`-покрытием (83 теста: state machine `gate()`/access, chunking, transcript-парсинг, mention-детект, permission-regex, санитайзеры). `tsconfig.json` (strict, bundler resolution) + скрипты `test` / `typecheck`.
 
 ### Changed
 - `external_plugins/telegram/package.json`: `start` теперь `bun install --no-summary --frozen-lockfile && bun server.ts` — плохой апстрим-релиз `grammy`/`@modelcontextprotocol/sdk` больше не подтянется молча при рестарте bridge.
+- `server.ts` 1221 → ~940 LOC: импортирует `src/`-модули, дублированная логика удалена. Поведение сохранено; два намеренных no-op-на-реальных-данных изменения: имена файлов скачанных фото проходят через `safeExt`/`safeId` (как уже делал `download_attachment`); bot-команда в группе больше не читает `access.json`.
 
 ### Fixed
 - README, секция «No history or search»: убрано ложное «there's no `download_attachment` tool» — tool существует; описан реальный механизм (фото скачиваются сразу → `image_path`; прочие типы приходят с `attachment_file_id` → `download_attachment`, ≤ 20 MB; исторические сообщения недостижимы).

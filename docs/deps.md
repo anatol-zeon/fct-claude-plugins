@@ -17,7 +17,10 @@
 
 | Пакет | Версия | Зачем | Лицензия |
 |---|---|---|---|
-| _(нет)_ — нет отдельного build/lint pipeline; `bun` исполняет TS напрямую | | | |
+| `bun:test` | (входит в `bun`) | Тест-раннер. `bun test` подхватывает `src/**/*.test.ts`. Не отдельная зависимость. | MIT (bun) |
+| `typescript` (`tsc`) | через `bunx tsc` | Типчек: `bun run typecheck` → `bunx tsc -p tsconfig.json --noEmit`. Ставится эфемерно через `bunx`, **не** в `package.json` (иначе тянулся бы на bridge-хост через `start`'s `bun install`). | Apache-2.0 |
+
+Нет ESLint/Prettier — стиль держим вручную, форматирование тривиальное.
 
 ## Removed dependencies (archive)
 
