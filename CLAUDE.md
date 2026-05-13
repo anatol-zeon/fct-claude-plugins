@@ -40,12 +40,14 @@ tmux new -d -s tg-bridge external_plugins/telegram/scripts/claude-tg-bridge.sh
 
 ```bash
 cd external_plugins/telegram
-bun test          # unit-тесты на src/ (gate/access, chunk, parseLastUsage, isMentioned, permission-regex, ...)
+bun test          # всё: unit + e2e (~1.8 s)
+bun run test:unit  # быстрая обратная связь по чистой логике в src/ (~100 ms)
+bun run test:e2e   # bridge e2e на subprocess + Telegram-mock + stdio-MCP-клиенте
 bun run typecheck  # bunx tsc -p tsconfig.json --noEmit (tsc ставится через bunx, не в deps)
 bun --check server.ts   # syntax + top-level (входит в idle mode и паркуется)
 ```
 
-Чистая логика вынесена в `external_plugins/telegram/src/` (`text` / `permissions` / `sanitize` / `transcript` / `mentions` / `access`), каждый модуль с `*.test.ts` рядом. `server.ts` — IO/wiring-слой (MCP tools, grammy-хендлеры, lifecycle), его юнитами не покрываем — проверяем через `bun --check` + дымовые запуски (idle / bridge-без-токена).
+Чистая логика вынесена в `external_plugins/telegram/src/` (`text` / `permissions` / `sanitize` / `transcript` / `mentions` / `access`), каждый модуль с `*.test.ts` рядом. IO/wiring-слой `server.ts` покрывает `test/e2e/` — поднимает реальный `bun server.ts` subprocess, мокает `api.telegram.org` (`test/e2e/telegram-mock.ts`, через `TELEGRAM_API_ROOT`), цепляет stdio-MCP-клиент и прогоняет сценарии (паринг-код, allowlisted-DM → MCP, permission-relay round-trip, `/status`). Описание сценариев — `test/e2e/README.md`.
 
 ## 5. Структура
 

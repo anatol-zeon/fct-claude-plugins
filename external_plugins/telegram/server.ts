@@ -128,7 +128,12 @@ process.on('uncaughtException', err => {
   process.stderr.write(`telegram channel: uncaught exception: ${err}\n`)
 })
 
-const bot = new Bot(TOKEN)
+// TELEGRAM_API_ROOT lets tests redirect grammy at a local mock of
+// api.telegram.org. Unset = grammy's default (production).
+const bot = new Bot(
+  TOKEN,
+  process.env.TELEGRAM_API_ROOT ? { client: { apiRoot: process.env.TELEGRAM_API_ROOT } } : undefined,
+)
 let botUsername = ''
 
 // Access state machine (types, gate, pairing lifecycle, persistence) lives in
