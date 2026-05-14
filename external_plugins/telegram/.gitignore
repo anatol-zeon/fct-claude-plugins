@@ -1,0 +1,7 @@
+node_modules/
+
+# CC's plugin-cache "in use" markers. We're not normally a CC cache target,
+# but the wrapper-bridge dev flow symlinks ~/.claude/plugins/cache/fct-…/0.0.9
+# at this directory (so live edits are picked up on next bun restart), and CC
+# then writes .in_use/<pid> files here while a session has the plugin loaded.
+.in_use/

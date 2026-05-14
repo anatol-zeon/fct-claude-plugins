@@ -50,6 +50,15 @@ fi
 
 export TELEGRAM_BRIDGE=1
 
+# Don't let CC auto-update mid-session: the update UI takes over the pty,
+# the long-poll stalls, the token slot gets stolen by other CC sessions on
+# the host (see ADR-0002). Pin the running CC version for the bridge's
+# lifetime. Operator can opt out by setting DISABLE_AUTOUPDATER= before
+# launching the wrapper.
+: "${DISABLE_AUTOUPDATER:=1}"
+: "${CLAUDE_CODE_AUTO_UPDATE:=false}"
+export DISABLE_AUTOUPDATER CLAUDE_CODE_AUTO_UPDATE
+
 trap 'echo "[tg-bridge] stopped" >&2; exit 0' INT TERM
 
 echo "[tg-bridge] --dangerously-load-development-channels plugin:${TG_BRIDGE_PLUGIN}@${TG_BRIDGE_MARKETPLACE}" >&2
