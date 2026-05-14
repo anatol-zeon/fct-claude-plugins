@@ -30,6 +30,7 @@ import {
   findSessionJsonl as findSessionJsonlIn, type ContextSnapshot,
 } from './src/transcript'
 import { isMentioned } from './src/mentions'
+import { findAncestorPid } from './src/lifecycle'
 import {
   pruneExpired, gate as gateInbound, dmCommandGate as dmCommandCheck,
   assertAllowedChat as assertAllowedChatIn,
@@ -661,21 +662,38 @@ bot.command('context', async ctx => {
 })
 
 // Restart the bridged Claude session — used when context is full and you want
-// to start over without sshing back into the host. We SIGTERM our parent
-// (the `claude` process), which exits cleanly. The wrapper-loop
-// (scripts/claude-tg-bridge.sh) then iterates and starts a new session
-// with the same env. Without the wrapper, nothing respawns and the bridge
-// just ends — runs of `claude` started manually one-off won't restart.
+// to start over without sshing back into the host. The wrapper-loop in
+// scripts/claude-tg-bridge.sh respawns claude when it exits, so we SIGTERM
+// the claude *process* — not our immediate parent. server.ts is launched
+// under `bun run --cwd … start`, so process.ppid is the bun-run wrapper;
+// signalling that just kills us and leaves claude alive. Walk the parent
+// chain (Linux only — /proc) and find the claude ancestor.
+function readPpidFromProc(pid: number): number | null {
+  try {
+    const m = readFileSync(`/proc/${pid}/status`, 'utf8').match(/^PPid:\s*(\d+)/m)
+    return m ? parseInt(m[1]!, 10) : null
+  } catch { return null }
+}
+function pidIsClaude(pid: number): boolean {
+  try {
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+    const argv0 = cmdline.split('\0')[0] ?? ''
+    return (argv0.split('/').pop() ?? '') === 'claude'
+  } catch { return false }
+}
 bot.command('newsession', async ctx => {
   if (!dmCommandGate(ctx)) return
   try {
     await ctx.reply('🔄 Restarting Claude session — context cleared.')
   } catch {}
-  if (process.ppid > 1) {
+  // Prefer the claude ancestor; fall back to immediate parent on non-Linux
+  // hosts where /proc isn't available. Refuse to signal pid<=1.
+  const target = findAncestorPid(process.ppid, pidIsClaude, readPpidFromProc) ?? process.ppid
+  if (target > 1) {
     try {
-      process.kill(process.ppid, 'SIGTERM')
+      process.kill(target, 'SIGTERM')
     } catch (err) {
-      process.stderr.write(`telegram channel: failed to signal parent: ${err}\n`)
+      process.stderr.write(`telegram channel: failed to signal claude (pid ${target}): ${err}\n`)
     }
   }
   // Existing SIGTERM/stdin-EOF handlers will tear us down once CC exits.
