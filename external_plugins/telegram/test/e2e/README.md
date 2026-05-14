@@ -39,7 +39,9 @@ call fires from grammy's `onStart` once polling is up.
 | 1. unpaired DM → pairing code | Stranger DMs the bot under `dmPolicy: "pairing"` with an empty allowlist. Asserts the bridge replies via Telegram with `Pairing required — … /telegram:access pair <6-hex>` and emits **no** `notifications/claude/channel` (the message is paired-not-delivered). |
 | 2. allowlisted DM → MCP delivery | DM from an `allowFrom` member. Asserts an outbound `sendChatAction` (typing indicator) and an MCP `notifications/claude/channel` carrying `content`, `meta.chat_id`, `meta.user_id`, `meta.message_id`, `meta.user`. |
 | 3. permission-relay round-trip | Test sends `notifications/claude/channel/permission_request` to the bridge. Asserts an outbound DM to the owner with `🔐 Permission [<id>]: …` and a `Reply: y <id>` hint. Pushes a `y <id>` inbound from the owner. Asserts: (a) MCP `notifications/claude/channel/permission` with `{request_id, behavior:'allow'}`, (b) `setMessageReaction` ✅ on the reply, (c) **no** plain-text channel relay of `y <id>` (the gate intercepted it). |
-| 4. `/status` DM | Allowlisted user sends `/status`. Asserts the bridge replies with `Paired as …` — exercises the DM-only `bot.command` path through `dmCommandGate`. |
+| 4. `/status` DM | Allowlisted user sends `/status`. Asserts the bridge replies with `Paired as …` — exercises the DM-only `bot.command` path through `dmCommandGate`. The predicate anchors on the `Paired as ` prefix so the simultaneous boot greeting (scenario 5) doesn't win the race. |
+| 5. boot greeting fan-out | On a bridge that has at least one allowlisted user, on startup the bridge DMs every entry in `allowFrom` with `🟢 Bridge online — @<botname>\n<branch>@<sha> · pid <N>` — operator's "I'm alive" signal after `/newsession` / service restart. |
+| 6. silent boot when nobody's paired | Empty `allowFrom` → no greeting goes out (no one to greet, no error). |
 
 Both ends are real: the MCP transport is the same stdio JSON-RPC server.ts
 uses in production; the grammy polling loop is real; only `api.telegram.org`

@@ -108,10 +108,44 @@ describe('bridge e2e', () => {
 
     bridge.mock.pushUpdate(dmCommandUpdate(OWNER_ID, '/status'))
 
+    // Predicate explicitly anchors on "Paired as " so the boot-greeting
+    // sendMessage (which also targets allowlisted chat_ids on startup) doesn't
+    // get returned ahead of the /status reply.
     const reply = await bridge.mock.waitFor(
-      c => c.method === 'sendMessage' && String(c.body.chat_id) === String(OWNER_ID),
+      c => c.method === 'sendMessage' &&
+           String(c.body.chat_id) === String(OWNER_ID) &&
+           String(c.body.text).startsWith('Paired as '),
     )
     expect(String(reply.body.text)).toMatch(/Paired as /)
+  }, SCENARIO_TIMEOUT)
+
+  test('boot greeting is DM\'d to every allowlisted user on startup', async () => {
+    bridge = await startBridge({
+      access: { dmPolicy: 'allowlist', allowFrom: [String(OWNER_ID)], groups: {}, pending: {} },
+    })
+
+    const greeting = await bridge.mock.waitFor(
+      c => c.method === 'sendMessage' &&
+           String(c.body.chat_id) === String(OWNER_ID) &&
+           String(c.body.text).startsWith('🟢 Bridge online'),
+    )
+    expect(String(greeting.body.text)).toContain('Bridge online')
+    expect(String(greeting.body.text)).toContain(`pid `)
+  }, SCENARIO_TIMEOUT)
+
+  test('no greeting goes out when the allowlist is empty', async () => {
+    bridge = await startBridge({
+      access: { dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {} },
+    })
+
+    // Give grammy a moment to fire onStart fully — setMyCommands has already
+    // hit the mock (the harness waited for that), and the greeting would
+    // ride right after if it were going to.
+    await sleep(300)
+    const greetings = bridge.mock.outboxOf('sendMessage').filter(
+      c => String(c.body.text).startsWith('🟢 Bridge online'),
+    )
+    expect(greetings.length).toBe(0)
   }, SCENARIO_TIMEOUT)
 })
 

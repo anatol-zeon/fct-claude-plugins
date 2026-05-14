@@ -31,6 +31,7 @@ import {
 } from './src/transcript'
 import { isMentioned } from './src/mentions'
 import { findAncestorPid } from './src/lifecycle'
+import { bootGreeting } from './src/greeting'
 import {
   pruneExpired, gate as gateInbound, dmCommandGate as dmCommandCheck,
   assertAllowedChat as assertAllowedChatIn,
@@ -923,6 +924,35 @@ bot.catch(err => {
 // returned, and polling stopped permanently while the process stayed alive
 // (MCP stdin keeps it running). Outbound tools kept working but the bot was
 // deaf to inbound messages until a full restart.
+// Boot-time DM to every allowlisted user — "I'm alive, here's what version".
+// Skipped silently when access.json is empty (no one to greet) or the send
+// fails (we just log; nothing else hinges on this).
+function sendBootGreeting(botUsername: string): void {
+  let access: Access
+  try { access = loadAccess() } catch { return }
+  if (access.allowFrom.length === 0) return
+
+  let branch = ''
+  let sha = ''
+  try {
+    const b = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd: process.cwd() })
+    branch = (b.stdout?.toString?.() ?? '').trim()
+    const s = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD'], { cwd: process.cwd() })
+    sha = (s.stdout?.toString?.() ?? '').trim()
+  } catch {}
+
+  const msg = bootGreeting({ botUsername, branch, sha, pid: process.pid })
+  for (const chat_id of access.allowFrom) {
+    void bot.api.sendMessage(chat_id, msg).catch(err => {
+      process.stderr.write(`telegram channel: boot greeting to ${chat_id} failed: ${err}\n`)
+    })
+  }
+}
+
+// Reset on each bun process; transient-retry recoveries within the same
+// process don't re-trigger the greeting. A real respawn (/newsession,
+// systemd restart, crash) is a fresh process → fresh `false` → one greeting.
+let greeted = false
 void (async () => {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -941,6 +971,10 @@ void (async () => {
             ],
             { scope: { type: 'all_private_chats' } },
           ).catch(() => {})
+          if (!greeted) {
+            greeted = true
+            sendBootGreeting(info.username)
+          }
         },
       })
       return // bot.stop() was called — clean exit from the loop
