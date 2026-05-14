@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+### Added (post-PR #2)
+- Boot greeting: на старте bridge DM'ит каждому из `allowFrom` строку `🟢 Bridge online — @<botname>\n<branch>@<sha> · pid <N>`. Видимый «я живой»-сигнал после `/newsession`, краша, systemd-рестарта. Чистая функция в `src/greeting.ts` (3 unit-теста), wire-up в `onStart` с одноразовым `greeted`-флагом — grammy retries после транзиента не спамят. e2e-сценарии 5 (greeting рассылается) и 6 (пустой allowFrom = молчаливый старт).
+
 ### Added
 - `docs/deps.md`, `docs/apis.md`, проектный `CLAUDE.md` заполнены (были болванки скелета): реестр зависимостей с обоснованием и проверкой лицензий, поверхность плагина (MCP tools/notifications, схема `access.json`, bot-команды, env), проектные правила (single-user, allowlist, pairing-bootstrap, группы не поддерживаются).
 - README: запись `download_attachment` в таблицу tools; явный single-user-фрейминг и пометка про `--dangerously-skip-permissions`-размен.
