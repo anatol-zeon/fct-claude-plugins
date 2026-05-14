@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Added (post-PR #3)
+- `external_plugins/telegram/scripts/tg-instance.sh` — управление множеством bot-инстансов одной командой. `add <token>` валидирует токен через `getMe`, выводит slug из username, разворачивает изолированный state-dir под `~/.claude/channels/telegram-<slug>/`, кладёт `run.sh` launcher (chmod 700, токен внутри), стартует `tmux-bridge-<slug>` через основной wrapper. cwd для bridge'а — та директория, из которой вызван `add` (то есть несколько ботов в одном проекте делят кодбазу, но allowlist/inbox/pending у каждого свой). Команды: `add` / `start` / `list`. Отказывается scaffold'ить второй инстанс на тот же токен (single-poller-per-token per ADR-0002).
+- `skills/access/SKILL.md` — теперь multi-instance-aware: флаг `--instance <slug>` / `-i <slug>` нацеливает на нужный state-dir, а `pair <code>` автодетектит инстанс сканированием `pending` по всем `~/.claude/channels/telegram*/access.json`. Бэк-совместимо: без флага — default-инстанс.
+- README'у плагина — секция "Multiple bots on one project" с end-to-end-флоу.
+
 ### Added (post-PR #2)
 - Boot greeting: на старте bridge DM'ит каждому из `allowFrom` строку `🟢 Bridge online — @<botname>\n<branch>@<sha> · pid <N>`. Видимый «я живой»-сигнал после `/newsession`, краша, systemd-рестарта. Чистая функция в `src/greeting.ts` (3 unit-теста), wire-up в `onStart` с одноразовым `greeted`-флагом — grammy retries после транзиента не спамят. e2e-сценарии 5 (greeting рассылается) и 6 (пустой allowFrom = молчаливый старт).
 
