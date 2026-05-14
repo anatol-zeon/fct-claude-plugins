@@ -70,6 +70,24 @@ Your next DM reaches the assistant.
 
 > Unlike Discord, there's no server invite step — Telegram bots accept DMs immediately. Pairing handles the user-ID lookup so you never touch numeric IDs.
 
+**Multiple bots on one project.** To run several bots in parallel on the same codebase — each driving its own Claude conversation — use [scripts/tg-instance.sh](./scripts/tg-instance.sh):
+
+```sh
+cd ~/projects/<your-codebase>     # bridges will run with this as cwd
+~/projects/fct-tg-bot/external_plugins/telegram/scripts/tg-instance.sh add <bot-token>
+```
+
+That's it — one token in. The script `getMe`s the token to derive a slug from the bot's username, scaffolds `~/.claude/channels/telegram-<slug>/` with a fresh `access.json`, drops a `run.sh` launcher (chmod 700, token embedded) into it, and starts a tmux session `tg-bridge-<slug>`. The bridge's `claude` runs in the cwd you called from, so all instances share the same project source. State (allowlist, pending pairings, inbox) is fully isolated per instance.
+
+```sh
+tg-instance.sh list           # see all instances + their poller PIDs / tmux state
+tg-instance.sh start <slug>   # (re)start an existing instance after a host reboot
+```
+
+Pair each new bot by DMing it (it'll reply with a code) and running `/telegram:access pair <code>` in any Claude Code session — the skill scans every instance's `pending` map and figures out which bot issued the code, no `--instance` flag needed for the common case. For other access operations on a non-default instance, pass `--instance <slug>` (e.g. `/telegram:access --instance work allow 412587349`).
+
+The script refuses to scaffold two instances on the same bot token (Telegram allows one `getUpdates` consumer per token — they'd 409 each other; see [ADR-0002](../../docs/adr/0002-bridge-process-and-idle-mode.md)).
+
 **5. Lock it down.**
 
 Pairing is for capturing IDs. Once you're in, switch to `allowlist` so strangers don't get pairing-code replies. Ask Claude to do it, or `/telegram:access policy allowlist` directly.
