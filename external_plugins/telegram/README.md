@@ -4,6 +4,8 @@ Connect a Telegram bot to your Claude Code with an MCP server.
 
 The MCP server logs into Telegram as a bot and provides tools to Claude to reply, react, or edit messages. When you message the bot, the server forwards the message to your Claude Code session.
 
+> **In a hurry? See [QUICKSTART.md](./QUICKSTART.md) — ~5 minutes from scratch to a paired bot.**
+
 > **Single-user fork.** This is a personal fork (`anatol-zeon/fct-claude-plugins`) tuned for one operator on one host: DM-only, `dmPolicy: allowlist` as the steady state, `pairing` used once to capture your numeric ID. Group support is inherited from upstream and still in the code, but untested and unmaintained here — see [ACCESS.md](./ACCESS.md). The `--dangerously-skip-permissions` mode the bridge runs in is a deliberate convenience trade-off for that single-operator setup; treat the allowlist (and your Telegram account's 2FA) as the security boundary.
 
 ## Prerequisites
